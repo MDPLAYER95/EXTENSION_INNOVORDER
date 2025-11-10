@@ -1,0 +1,27 @@
+{
+  "manifest_version": 3,
+  "name": "Innovorder Kitchen Product Filter",
+  "version": "1.0.0",
+  "description": "Affiche uniquement les tickets contenant certains produits sur kitchen-display.innovorder.fr.",
+  "permissions": [
+    "storage"
+  ],
+  "host_permissions": [
+    "https://kitchen-display.innovorder.fr/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "https://kitchen-display.innovorder.fr/*"
+      ],
+      "js": [
+        "contentScript.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Filtre produits Innovorder"
+  }
+}
