@@ -20,6 +20,16 @@
       "run_at": "document_idle"
     }
   ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "references.json"
+      ],
+      "matches": [
+        "https://kitchen-display.innovorder.fr/*"
+      ]
+    }
+  ],
   "action": {
     "default_popup": "popup.html",
     "default_title": "Filtre produits Innovorder"

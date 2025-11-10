@@ -11,8 +11,17 @@
       <input id="product-input" type="text" placeholder="Nom du produit (ex: frite)" autocomplete="off">
       <button type="submit">Ajouter</button>
     </form>
+    <label class="toggle-option">
+      <input type="checkbox" id="auto-print-toggle">
+      <span>Imprimer automatiquement la commande quand un produit passe en préparation</span>
+    </label>
+    <p id="auto-print-help">Une page d'impression s'ouvrira dès qu'un article passe au statut "en cours".</p>
     <ul id="product-list"></ul>
     <p id="empty-help">Aucun filtre : tous les tickets sont visibles.</p>
+    <section id="reference-section" hidden>
+      <h2>Références rapides</h2>
+      <ul id="reference-list"></ul>
+    </section>
     <script src="popup.js"></script>
   </body>
 </html>
