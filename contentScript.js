@@ -5,6 +5,7 @@ const AUTO_PRINT_KEY = 'autoPrintEnabled';
 const REFERENCES_URL = chrome.runtime.getURL('references.json');
 const TIMER_ENABLED_KEY = 'productTimersEnabled';
 const TIMER_CONFIG_URL = chrome.runtime.getURL('productTimers.json');
+const TIMER_STALE_THRESHOLD_MS = 5 * 60 * 1000;
 
 let allowedProducts = [];
 let filterKeywords = [];
@@ -380,6 +381,8 @@ function markProductTimerReady(timerKey) {
   }
 
   info.ready = true;
+  info.readySince = Date.now();
+  info.lastSeen = info.readySince;
   if (info.intervalId) {
     clearInterval(info.intervalId);
     info.intervalId = null;
@@ -496,6 +499,8 @@ function ensureProductTimer(
       startedAt,
       expiresAt,
       ready: false,
+      readySince: null,
+      lastSeen: startedAt,
       beeped: false,
       instances: new Map()
     };
@@ -505,6 +510,7 @@ function ensureProductTimer(
   info.signature = signature;
   info.orderNumber = orderNumber;
   info.timerEntry = timerEntry;
+  info.lastSeen = Date.now();
   if (!Number.isFinite(info.expiresAt)) {
     const base = Number.isFinite(info.startedAt) ? info.startedAt : Date.now();
     info.expiresAt = base + durationMs;
@@ -519,14 +525,24 @@ function cleanupTimersForTicket(signature, keepKeys) {
       return;
     }
     if (!keepKeys.has(key)) {
+      if (info.ready) {
+        info.lastSeen = Date.now();
+        return;
+      }
       clearActiveProductTimer(key);
     }
   });
 }
 
 function cleanupOrphanTimers(activeSignatures) {
+  const now = Date.now();
   activeProductTimers.forEach((info, key) => {
-    if (!activeSignatures.has(info.signature)) {
+    if (activeSignatures.has(info.signature)) {
+      info.lastSeen = now;
+      return;
+    }
+    const lastSeen = Number.isFinite(info.lastSeen) ? info.lastSeen : 0;
+    if (now - lastSeen > TIMER_STALE_THRESHOLD_MS) {
       clearActiveProductTimer(key);
     }
   });
@@ -551,6 +567,41 @@ function collectCustomisations(container) {
   return items;
 }
 
+function getArticleStatus(article) {
+  if (!(article instanceof HTMLElement)) {
+    return 'unknown';
+  }
+
+  if (article.classList.contains('io-product-ready')) {
+    return 'done';
+  }
+
+  const statusIcon = article.querySelector('svg[data-testid]');
+  const rawStatus =
+    (statusIcon && (statusIcon.dataset.testid || statusIcon.getAttribute('data-testid'))) || '';
+  const normalizedStatus = rawStatus
+    .toString()
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z]/g, '');
+
+  if (!normalizedStatus) {
+    return 'unknown';
+  }
+
+  if (normalizedStatus.includes('doing') || normalizedStatus.includes('progress')) {
+    return 'doing';
+  }
+  if (normalizedStatus.includes('todo')) {
+    return 'todo';
+  }
+  if (normalizedStatus.includes('done')) {
+    return 'done';
+  }
+
+  return normalizedStatus;
+}
+
 function collectArticleDetails(article) {
   const lines = [];
   if (!article) {
@@ -563,7 +614,8 @@ function collectArticleDetails(article) {
       type: 'item',
       text: label,
       element: article,
-      timerTarget: labelEl || article
+      timerTarget: labelEl || article,
+      status: getArticleStatus(article)
     });
   }
   const customisations = collectCustomisations(
@@ -675,24 +727,31 @@ function processTicketTimers(ticket, activeSignatures) {
   }
 
   activeSignatures.add(signature);
+  const now = Date.now();
+  activeProductTimers.forEach(info => {
+    if (info.signature === signature) {
+      info.lastSeen = now;
+    }
+  });
 
   if (!productTimersEnabled || !productTimerEntries.length) {
     cleanupTimersForTicket(signature, new Set());
     return;
   }
 
-  const doingIcon = ticket.querySelector('svg[data-testid="DOING"]');
-  if (!doingIcon) {
+  const orderNumber = getTicketNumber(ticket);
+  const details = extractTicketDetails(ticket).filter(entry => entry.type === 'item');
+  const activeItems = details.filter(entry => entry.status === 'doing');
+
+  if (!activeItems.length) {
     cleanupTimersForTicket(signature, new Set());
     return;
   }
 
-  const orderNumber = getTicketNumber(ticket);
-  const details = extractTicketDetails(ticket).filter(entry => entry.type === 'item');
   const keepKeys = new Set();
   const occurrenceCount = new Map();
 
-  details.forEach(entry => {
+  activeItems.forEach(entry => {
     const normalizedText = normalizeText(entry.text);
     if (!normalizedText) {
       return;
