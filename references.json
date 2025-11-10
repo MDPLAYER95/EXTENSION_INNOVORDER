@@ -1,0 +1,22 @@
+{
+  "targets": [
+    {
+      "label": "Petite frite",
+      "value": "Petite frite",
+      "references": [
+        "Petite frite",
+        "🍟 Petite frite"
+      ]
+    },
+    {
+      "label": "Frite sauce fromagère",
+      "value": "Frite sauce fromagère",
+      "references": [
+        "Frite sauce fromagère",
+        "🍟🧀Frite sauce fromagère",
+        "Frite sauce fromagère lardon",
+        "Frite sauce fromagère oignons frits"
+      ]
+    }
+  ]
+}
