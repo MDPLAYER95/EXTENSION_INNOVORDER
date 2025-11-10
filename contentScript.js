@@ -15,7 +15,9 @@ const printedTicketSignatures = new Set();
 let productTimersEnabled = false;
 let productTimerEntries = [];
 const activeProductTimers = new Map();
-let cachedFrenchVoice = null;
+let readyBeepContext = null;
+let timerStylesInjected = false;
+let timerStylesPending = false;
 
 function ensurePrintFrame() {
   if (!printFrame) {
@@ -135,46 +137,303 @@ function markTicketAsPrinted(ticket, signature) {
   }
 }
 
-function pickFrenchVoice() {
-  if (!('speechSynthesis' in window)) {
-    return null;
-  }
-
-  const availableVoices = window.speechSynthesis.getVoices();
-  if (availableVoices && availableVoices.length) {
-    const primary = availableVoices.find(voice =>
-      voice.lang && voice.lang.toLowerCase().startsWith('fr')
-    );
-    if (primary) {
-      cachedFrenchVoice = primary;
-      return primary;
-    }
-
-    if (cachedFrenchVoice && availableVoices.includes(cachedFrenchVoice)) {
-      return cachedFrenchVoice;
-    }
-  }
-
-  return cachedFrenchVoice || null;
-}
-
-function announceProductReady(productLabel, orderNumber) {
-  if (!('speechSynthesis' in window)) {
+function ensureTimerStyles() {
+  if (timerStylesInjected) {
     return;
   }
 
-  const label = productLabel || 'Produit';
-  const order = orderNumber || 'commande';
-  const message = `${label} de ${order} est prêt.`;
-  const utterance = new SpeechSynthesisUtterance(message);
-  utterance.lang = 'fr-FR';
+  const styleContent = `
+    .io-product-timer-host {
+      position: relative;
+    }
 
-  const voice = pickFrenchVoice();
-  if (voice) {
-    utterance.voice = voice;
+    .io-product-timer-badge {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      margin-left: 8px;
+      padding: 2px 8px;
+      border-radius: 999px;
+      background-color: #2563eb;
+      color: #ffffff;
+      font-size: 0.75rem;
+      font-weight: 600;
+      line-height: 1;
+      white-space: nowrap;
+      min-width: 48px;
+      box-shadow: 0 1px 2px rgba(15, 23, 42, 0.2);
+    }
+
+    .io-product-timer-ready {
+      background-color: #dc2626;
+    }
+
+    .io-product-ready {
+      animation: io-product-ready-blink 1s ease-in-out infinite;
+      background-color: rgba(220, 38, 38, 0.16);
+      border-radius: 8px;
+    }
+
+    .io-product-ready .io-product-timer-badge {
+      background-color: #dc2626;
+    }
+
+    @keyframes io-product-ready-blink {
+      0% {
+        box-shadow: 0 0 0 0 rgba(220, 38, 38, 0.55);
+      }
+      50% {
+        box-shadow: 0 0 0 4px rgba(220, 38, 38, 0.2);
+        background-color: rgba(220, 38, 38, 0.32);
+      }
+      100% {
+        box-shadow: 0 0 0 0 rgba(220, 38, 38, 0.55);
+      }
+    }
+  `;
+
+  const attachStyles = () => {
+    if (timerStylesInjected) {
+      return;
+    }
+    const target = document.head || document.documentElement || document.body;
+    if (!target) {
+      return;
+    }
+    const style = document.createElement('style');
+    style.type = 'text/css';
+    style.textContent = styleContent;
+    target.appendChild(style);
+    timerStylesInjected = true;
+  };
+
+  attachStyles();
+
+  if (!timerStylesInjected && !timerStylesPending) {
+    timerStylesPending = true;
+    document.addEventListener(
+      'DOMContentLoaded',
+      () => {
+        timerStylesPending = false;
+        attachStyles();
+      },
+      { once: true }
+    );
+  }
+}
+
+function formatTimerDuration(ms) {
+  if (!Number.isFinite(ms) || ms < 0) {
+    ms = 0;
+  }
+  const totalSeconds = Math.max(0, Math.ceil(ms / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+}
+
+function playReadyBeep() {
+  const AudioContextConstructor = window.AudioContext || window.webkitAudioContext;
+  if (!AudioContextConstructor) {
+    return;
   }
 
-  window.speechSynthesis.speak(utterance);
+  if (!readyBeepContext) {
+    try {
+      readyBeepContext = new AudioContextConstructor();
+    } catch (error) {
+      readyBeepContext = null;
+      return;
+    }
+  }
+
+  const context = readyBeepContext;
+  const startBeep = () => {
+    if (!context) {
+      return;
+    }
+    const duration = 2;
+    const oscillator = context.createOscillator();
+    const gain = context.createGain();
+    oscillator.type = 'sine';
+    oscillator.frequency.setValueAtTime(880, context.currentTime);
+    oscillator.connect(gain);
+    gain.connect(context.destination);
+    const now = context.currentTime;
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.exponentialRampToValueAtTime(0.3, now + 0.05);
+    gain.gain.setValueAtTime(0.3, now + duration - 0.1);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + duration);
+    oscillator.start(now);
+    oscillator.stop(now + duration);
+    oscillator.onended = () => {
+      oscillator.disconnect();
+      gain.disconnect();
+    };
+  };
+
+  if (context.state === 'suspended') {
+    context
+      .resume()
+      .then(startBeep)
+      .catch(startBeep);
+  } else {
+    startBeep();
+  }
+}
+
+function ensureTimerBadge(instance) {
+  if (!instance) {
+    return null;
+  }
+
+  let target = instance.target;
+  if (!(target instanceof HTMLElement) || !target.isConnected) {
+    target = instance.host instanceof HTMLElement ? instance.host : null;
+  }
+
+  if (!target) {
+    return null;
+  }
+
+  let badge = instance.badge;
+  if (badge && !badge.isConnected) {
+    badge = null;
+  }
+
+  if (!badge) {
+    badge = document.createElement('span');
+    badge.className = 'io-product-timer-badge';
+    badge.setAttribute('role', 'status');
+    badge.setAttribute('aria-live', 'polite');
+    target.appendChild(badge);
+    instance.badge = badge;
+  }
+
+  return badge;
+}
+
+function cleanupTimerInstance(instance) {
+  if (!instance) {
+    return;
+  }
+  if (instance.badge && instance.badge.parentNode) {
+    instance.badge.classList.remove('io-product-timer-ready');
+    instance.badge.remove();
+  }
+  instance.badge = null;
+  if (instance.host && instance.host.classList) {
+    instance.host.classList.remove('io-product-ready', 'io-product-timer-host');
+  }
+}
+
+function updateTimerInstance(info, instance, ready, displayText) {
+  if (!instance) {
+    return;
+  }
+
+  const host = instance.host;
+  if (!(host instanceof HTMLElement) || !host.isConnected) {
+    cleanupTimerInstance(instance);
+    if (host && info.instances.has(host)) {
+      info.instances.delete(host);
+    }
+    return;
+  }
+
+  host.classList.add('io-product-timer-host');
+  host.classList.toggle('io-product-ready', ready);
+
+  const badge = ensureTimerBadge(instance);
+  if (!badge) {
+    return;
+  }
+
+  badge.textContent = displayText;
+  badge.classList.toggle('io-product-timer-ready', ready);
+  if (ready) {
+    badge.setAttribute('aria-label', 'Produit prêt');
+    badge.title = 'Produit prêt';
+  } else {
+    const label = `Temps restant : ${displayText}`;
+    badge.setAttribute('aria-label', label);
+    badge.title = label;
+  }
+}
+
+function updateProductTimerInfo(info, remainingMs) {
+  if (!info) {
+    return;
+  }
+
+  const ready = info.ready || remainingMs <= 0;
+  const displayText = ready ? 'Prêt' : formatTimerDuration(remainingMs);
+  info.instances.forEach(instance => {
+    updateTimerInstance(info, instance, ready, displayText);
+  });
+}
+
+function markProductTimerReady(timerKey) {
+  const info = activeProductTimers.get(timerKey);
+  if (!info || info.ready) {
+    return;
+  }
+
+  info.ready = true;
+  if (info.intervalId) {
+    clearInterval(info.intervalId);
+    info.intervalId = null;
+  }
+
+  if (!info.beeped) {
+    playReadyBeep();
+    info.beeped = true;
+  }
+
+  updateProductTimerInfo(info, 0);
+}
+
+function updateProductTimerDisplay(timerKey) {
+  const info = activeProductTimers.get(timerKey);
+  if (!info) {
+    return;
+  }
+
+  if (info.ready) {
+    updateProductTimerInfo(info, 0);
+    return;
+  }
+
+  const remaining = Math.max(0, info.expiresAt - Date.now());
+  if (remaining <= 0) {
+    markProductTimerReady(timerKey);
+    return;
+  }
+
+  updateProductTimerInfo(info, remaining);
+}
+
+function registerTimerElement(info, hostElement, badgeTarget, timerKey) {
+  if (!(hostElement instanceof HTMLElement)) {
+    return;
+  }
+
+  const host = hostElement;
+  const target = badgeTarget instanceof HTMLElement ? badgeTarget : hostElement;
+  let instance = info.instances.get(host);
+  if (!instance) {
+    instance = { host, target, badge: null, key: timerKey };
+    info.instances.set(host, instance);
+  } else {
+    instance.key = timerKey;
+    if (target !== instance.target) {
+      instance.target = target;
+      if (instance.badge && instance.badge.parentNode !== target) {
+        instance.badge.remove();
+        instance.badge = null;
+      }
+    }
+  }
 }
 
 function clearActiveProductTimer(timerKey) {
@@ -182,7 +441,19 @@ function clearActiveProductTimer(timerKey) {
   if (!info) {
     return;
   }
+
   clearTimeout(info.timeoutId);
+  if (info.intervalId) {
+    clearInterval(info.intervalId);
+  }
+
+  if (info.instances) {
+    info.instances.forEach(instance => {
+      cleanupTimerInstance(instance);
+    });
+    info.instances.clear();
+  }
+
   activeProductTimers.delete(timerKey);
 }
 
@@ -190,27 +461,56 @@ function clearAllProductTimers() {
   Array.from(activeProductTimers.keys()).forEach(clearActiveProductTimer);
 }
 
-function ensureProductTimer(timerKey, timerEntry, signature, orderNumber) {
-  if (activeProductTimers.has(timerKey)) {
-    return;
-  }
-
+function ensureProductTimer(
+  timerKey,
+  timerEntry,
+  signature,
+  orderNumber,
+  hostElement,
+  badgeTarget
+) {
   const durationMs = timerEntry.durationMs;
   if (!Number.isFinite(durationMs) || durationMs <= 0) {
     return;
   }
 
-  const timeoutId = setTimeout(() => {
-    announceProductReady(timerEntry.announcement || timerEntry.label, orderNumber);
-    activeProductTimers.delete(timerKey);
-  }, durationMs);
+  ensureTimerStyles();
 
-  activeProductTimers.set(timerKey, {
-    timeoutId,
-    signature,
-    timerEntry,
-    orderNumber
-  });
+  let info = activeProductTimers.get(timerKey);
+  if (!info) {
+    const startedAt = Date.now();
+    const expiresAt = startedAt + durationMs;
+    const timeoutId = setTimeout(() => {
+      markProductTimerReady(timerKey);
+    }, durationMs);
+    const intervalId = setInterval(() => {
+      updateProductTimerDisplay(timerKey);
+    }, 1000);
+
+    info = {
+      timeoutId,
+      intervalId,
+      signature,
+      timerEntry,
+      orderNumber,
+      startedAt,
+      expiresAt,
+      ready: false,
+      beeped: false,
+      instances: new Map()
+    };
+    activeProductTimers.set(timerKey, info);
+  }
+
+  info.signature = signature;
+  info.orderNumber = orderNumber;
+  info.timerEntry = timerEntry;
+  if (!Number.isFinite(info.expiresAt)) {
+    const base = Number.isFinite(info.startedAt) ? info.startedAt : Date.now();
+    info.expiresAt = base + durationMs;
+  }
+  registerTimerElement(info, hostElement, badgeTarget, timerKey);
+  updateProductTimerDisplay(timerKey);
 }
 
 function cleanupTimersForTicket(signature, keepKeys) {
@@ -230,19 +530,6 @@ function cleanupOrphanTimers(activeSignatures) {
       clearActiveProductTimer(key);
     }
   });
-}
-
-if ('speechSynthesis' in window) {
-  const synth = window.speechSynthesis;
-  const updateVoice = () => {
-    pickFrenchVoice();
-  };
-  if (typeof synth.addEventListener === 'function') {
-    synth.addEventListener('voiceschanged', updateVoice);
-  } else if ('onvoiceschanged' in synth) {
-    synth.onvoiceschanged = updateVoice;
-  }
-  pickFrenchVoice();
 }
 
 function getTicketNumber(ticket) {
@@ -272,7 +559,12 @@ function collectArticleDetails(article) {
   const labelEl = article.querySelector('p');
   const label = (labelEl ? labelEl.innerText : article.innerText || '').trim();
   if (label) {
-    lines.push({ type: 'item', text: label });
+    lines.push({
+      type: 'item',
+      text: label,
+      element: article,
+      timerTarget: labelEl || article
+    });
   }
   const customisations = collectCustomisations(
     article.querySelector('[data-testid="customisation-container"]')
@@ -416,7 +708,14 @@ function processTicketTimers(ticket, activeSignatures) {
       occurrenceCount.set(baseKey, occurrence);
       const timerKey = `${baseKey}#${occurrence}`;
       keepKeys.add(timerKey);
-      ensureProductTimer(timerKey, timerEntry, signature, orderNumber);
+      ensureProductTimer(
+        timerKey,
+        timerEntry,
+        signature,
+        orderNumber,
+        entry.element,
+        entry.timerTarget
+      );
     });
   });
 
