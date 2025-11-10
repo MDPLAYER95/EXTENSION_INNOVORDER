@@ -26,6 +26,25 @@ button {
   cursor: pointer;
 }
 
+.toggle-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 6px 0 2px;
+  font-size: 12px;
+}
+
+.toggle-option input[type="checkbox"] {
+  margin-top: 2px;
+}
+
+#auto-print-help {
+  margin: 0 0 8px 22px;
+  font-size: 11px;
+  color: #555;
+  display: none;
+}
+
 #product-list {
   list-style: none;
   padding: 0;
@@ -55,4 +74,35 @@ button {
   margin-top: 8px;
   font-size: 11px;
   color: #555;
+}
+
+#reference-section {
+  margin-top: 12px;
+}
+
+#reference-section h2 {
+  font-size: 13px;
+  margin: 0 0 6px;
+}
+
+#reference-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.reference-button {
+  border: 1px solid #d0d0d0;
+  background: #f5f5f5;
+  border-radius: 4px;
+  padding: 4px 6px;
+  font-size: 12px;
+}
+
+.reference-button[disabled] {
+  opacity: 0.5;
+  cursor: default;
 }
