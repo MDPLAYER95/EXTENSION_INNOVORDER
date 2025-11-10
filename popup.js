@@ -1,4 +1,6 @@
 const AUTO_PRINT_KEY = 'autoPrintEnabled';
+const PRODUCT_TIMER_KEY = 'productTimersEnabled';
+
 const input = document.getElementById('product-input');
 const listEl = document.getElementById('product-list');
 const form = document.getElementById('add-form');
@@ -7,6 +9,8 @@ const referenceSection = document.getElementById('reference-section');
 const referenceList = document.getElementById('reference-list');
 const autoPrintToggle = document.getElementById('auto-print-toggle');
 const autoPrintHelp = document.getElementById('auto-print-help');
+const timerToggle = document.getElementById('product-timer-toggle');
+const timerHelp = document.getElementById('product-timer-help');
 
 let products = [];
 let references = [];
@@ -25,6 +29,13 @@ function updateAutoPrintHelp() {
     return;
   }
   autoPrintHelp.style.display = autoPrintToggle.checked ? 'block' : 'none';
+}
+
+function updateTimerHelp() {
+  if (!timerHelp || !timerToggle) {
+    return;
+  }
+  timerHelp.style.display = timerToggle.checked ? 'block' : 'none';
 }
 
 function render() {
@@ -50,16 +61,23 @@ function render() {
 }
 
 function load() {
-  chrome.storage.sync.get({ allowedProducts: [], [AUTO_PRINT_KEY]: false }, data => {
-    const stored = Array.isArray(data.allowedProducts) ? data.allowedProducts : [];
-    products = stored;
-    if (autoPrintToggle) {
-      autoPrintToggle.checked = Boolean(data[AUTO_PRINT_KEY]);
+  chrome.storage.sync.get(
+    { allowedProducts: [], [AUTO_PRINT_KEY]: false, [PRODUCT_TIMER_KEY]: false },
+    data => {
+      const stored = Array.isArray(data.allowedProducts) ? data.allowedProducts : [];
+      products = stored;
+      if (autoPrintToggle) {
+        autoPrintToggle.checked = Boolean(data[AUTO_PRINT_KEY]);
+      }
+      if (timerToggle) {
+        timerToggle.checked = Boolean(data[PRODUCT_TIMER_KEY]);
+      }
+      render();
+      updateEmptyHelp();
+      updateAutoPrintHelp();
+      updateTimerHelp();
     }
-    render();
-    updateEmptyHelp();
-    updateAutoPrintHelp();
-  });
+  );
 }
 
 function renderReferences() {
@@ -157,6 +175,12 @@ document.addEventListener('DOMContentLoaded', () => {
     autoPrintToggle.addEventListener('change', () => {
       chrome.storage.sync.set({ [AUTO_PRINT_KEY]: autoPrintToggle.checked });
       updateAutoPrintHelp();
+    });
+  }
+  if (timerToggle) {
+    timerToggle.addEventListener('change', () => {
+      chrome.storage.sync.set({ [PRODUCT_TIMER_KEY]: timerToggle.checked });
+      updateTimerHelp();
     });
   }
   load();

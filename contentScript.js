@@ -3,6 +3,8 @@
 const STORAGE_KEY = 'allowedProducts';
 const AUTO_PRINT_KEY = 'autoPrintEnabled';
 const REFERENCES_URL = chrome.runtime.getURL('references.json');
+const TIMER_ENABLED_KEY = 'productTimersEnabled';
+const TIMER_CONFIG_URL = chrome.runtime.getURL('productTimers.json');
 
 let allowedProducts = [];
 let filterKeywords = [];
@@ -10,6 +12,10 @@ const referenceLookup = new Map();
 let autoPrintEnabled = false;
 let printFrame = null;
 const printedTicketSignatures = new Set();
+let productTimersEnabled = false;
+let productTimerEntries = [];
+const activeProductTimers = new Map();
+let cachedFrenchVoice = null;
 
 function ensurePrintFrame() {
   if (!printFrame) {
@@ -127,6 +133,116 @@ function markTicketAsPrinted(ticket, signature) {
   if (signature) {
     printedTicketSignatures.add(signature);
   }
+}
+
+function pickFrenchVoice() {
+  if (!('speechSynthesis' in window)) {
+    return null;
+  }
+
+  const availableVoices = window.speechSynthesis.getVoices();
+  if (availableVoices && availableVoices.length) {
+    const primary = availableVoices.find(voice =>
+      voice.lang && voice.lang.toLowerCase().startsWith('fr')
+    );
+    if (primary) {
+      cachedFrenchVoice = primary;
+      return primary;
+    }
+
+    if (cachedFrenchVoice && availableVoices.includes(cachedFrenchVoice)) {
+      return cachedFrenchVoice;
+    }
+  }
+
+  return cachedFrenchVoice || null;
+}
+
+function announceProductReady(productLabel, orderNumber) {
+  if (!('speechSynthesis' in window)) {
+    return;
+  }
+
+  const label = productLabel || 'Produit';
+  const order = orderNumber || 'commande';
+  const message = `${label} de ${order} est prêt.`;
+  const utterance = new SpeechSynthesisUtterance(message);
+  utterance.lang = 'fr-FR';
+
+  const voice = pickFrenchVoice();
+  if (voice) {
+    utterance.voice = voice;
+  }
+
+  window.speechSynthesis.speak(utterance);
+}
+
+function clearActiveProductTimer(timerKey) {
+  const info = activeProductTimers.get(timerKey);
+  if (!info) {
+    return;
+  }
+  clearTimeout(info.timeoutId);
+  activeProductTimers.delete(timerKey);
+}
+
+function clearAllProductTimers() {
+  Array.from(activeProductTimers.keys()).forEach(clearActiveProductTimer);
+}
+
+function ensureProductTimer(timerKey, timerEntry, signature, orderNumber) {
+  if (activeProductTimers.has(timerKey)) {
+    return;
+  }
+
+  const durationMs = timerEntry.durationMs;
+  if (!Number.isFinite(durationMs) || durationMs <= 0) {
+    return;
+  }
+
+  const timeoutId = setTimeout(() => {
+    announceProductReady(timerEntry.announcement || timerEntry.label, orderNumber);
+    activeProductTimers.delete(timerKey);
+  }, durationMs);
+
+  activeProductTimers.set(timerKey, {
+    timeoutId,
+    signature,
+    timerEntry,
+    orderNumber
+  });
+}
+
+function cleanupTimersForTicket(signature, keepKeys) {
+  activeProductTimers.forEach((info, key) => {
+    if (info.signature !== signature) {
+      return;
+    }
+    if (!keepKeys.has(key)) {
+      clearActiveProductTimer(key);
+    }
+  });
+}
+
+function cleanupOrphanTimers(activeSignatures) {
+  activeProductTimers.forEach((info, key) => {
+    if (!activeSignatures.has(info.signature)) {
+      clearActiveProductTimer(key);
+    }
+  });
+}
+
+if ('speechSynthesis' in window) {
+  const synth = window.speechSynthesis;
+  const updateVoice = () => {
+    pickFrenchVoice();
+  };
+  if (typeof synth.addEventListener === 'function') {
+    synth.addEventListener('voiceschanged', updateVoice);
+  } else if ('onvoiceschanged' in synth) {
+    synth.onvoiceschanged = updateVoice;
+  }
+  pickFrenchVoice();
 }
 
 function getTicketNumber(ticket) {
@@ -260,6 +376,53 @@ function renderPrintDocument(ticket) {
   }, 50);
 }
 
+function processTicketTimers(ticket, activeSignatures) {
+  const signature = getTicketSignature(ticket);
+  if (!signature) {
+    return;
+  }
+
+  activeSignatures.add(signature);
+
+  if (!productTimersEnabled || !productTimerEntries.length) {
+    cleanupTimersForTicket(signature, new Set());
+    return;
+  }
+
+  const doingIcon = ticket.querySelector('svg[data-testid="DOING"]');
+  if (!doingIcon) {
+    cleanupTimersForTicket(signature, new Set());
+    return;
+  }
+
+  const orderNumber = getTicketNumber(ticket);
+  const details = extractTicketDetails(ticket).filter(entry => entry.type === 'item');
+  const keepKeys = new Set();
+  const occurrenceCount = new Map();
+
+  details.forEach(entry => {
+    const normalizedText = normalizeText(entry.text);
+    if (!normalizedText) {
+      return;
+    }
+
+    productTimerEntries.forEach(timerEntry => {
+      if (!timerEntry.matchers.some(keyword => normalizedText.includes(keyword))) {
+        return;
+      }
+
+      const baseKey = `${signature}::${timerEntry.id}`;
+      const occurrence = (occurrenceCount.get(baseKey) || 0) + 1;
+      occurrenceCount.set(baseKey, occurrence);
+      const timerKey = `${baseKey}#${occurrence}`;
+      keepKeys.add(timerKey);
+      ensureProductTimer(timerKey, timerEntry, signature, orderNumber);
+    });
+  });
+
+  cleanupTimersForTicket(signature, keepKeys);
+}
+
 function maybeAutoPrintTickets() {
   if (!autoPrintEnabled) {
     return;
@@ -309,12 +472,15 @@ function hideElement(el) {
 
 function applyFilter() {
   const tickets = document.querySelectorAll('div[data-testid="simple-ticket"]');
+  const activeSignatures = new Set();
   if (!tickets.length) {
+    cleanupOrphanTimers(activeSignatures);
     maybeAutoPrintTickets();
     return;
   }
 
   tickets.forEach(ticket => {
+    processTicketTimers(ticket, activeSignatures);
     const allTicketItems = ticket.querySelectorAll(
       'article[data-testid="ticket-item"], article[data-testid="formula-ticket-item"]'
     );
@@ -439,6 +605,7 @@ function applyFilter() {
       ticket.dataset.productFilterHidden = 'true';
     }
   });
+  cleanupOrphanTimers(activeSignatures);
   maybeAutoPrintTickets();
 }
 
@@ -462,17 +629,24 @@ function rebuildFilterKeywords() {
 }
 
 function loadFilters() {
-  chrome.storage.sync.get({ [STORAGE_KEY]: [], [AUTO_PRINT_KEY]: false }, data => {
-    const raw = data[STORAGE_KEY] || [];
-    allowedProducts = raw
-      .filter(Boolean)
-      .map(String)
-      .map(str => str.trim())
-      .filter(Boolean);
-    autoPrintEnabled = Boolean(data[AUTO_PRINT_KEY]);
-    rebuildFilterKeywords();
-    applyFilter();
-  });
+  chrome.storage.sync.get(
+    { [STORAGE_KEY]: [], [AUTO_PRINT_KEY]: false, [TIMER_ENABLED_KEY]: false },
+    data => {
+      const raw = data[STORAGE_KEY] || [];
+      allowedProducts = raw
+        .filter(Boolean)
+        .map(String)
+        .map(str => str.trim())
+        .filter(Boolean);
+      autoPrintEnabled = Boolean(data[AUTO_PRINT_KEY]);
+      productTimersEnabled = Boolean(data[TIMER_ENABLED_KEY]);
+      if (!productTimersEnabled) {
+        clearAllProductTimers();
+      }
+      rebuildFilterKeywords();
+      applyFilter();
+    }
+  );
 }
 
 function loadReferenceFile() {
@@ -525,6 +699,118 @@ function loadReferenceFile() {
     });
 }
 
+function loadTimerConfig() {
+  fetch(TIMER_CONFIG_URL)
+    .then(response => {
+      if (!response.ok) {
+        throw new Error('Unable to load timers');
+      }
+      return response.json();
+    })
+    .then(data => {
+      const timers = Array.isArray(data.timers) ? data.timers : [];
+      productTimerEntries = timers
+        .map((timer, index) => {
+          const rawDurationMs = (() => {
+            if (typeof timer.durationMs === 'number') {
+              return timer.durationMs;
+            }
+            if (typeof timer.durationMs === 'string' && timer.durationMs.trim()) {
+              const parsed = Number(timer.durationMs);
+              if (!Number.isNaN(parsed)) {
+                return parsed;
+              }
+            }
+            if (typeof timer.durationSeconds === 'number') {
+              return timer.durationSeconds * 1000;
+            }
+            if (typeof timer.durationSeconds === 'string' && timer.durationSeconds.trim()) {
+              const parsed = Number(timer.durationSeconds);
+              if (!Number.isNaN(parsed)) {
+                return parsed * 1000;
+              }
+            }
+            if (typeof timer.durationMinutes === 'number') {
+              return timer.durationMinutes * 60 * 1000;
+            }
+            if (typeof timer.durationMinutes === 'string' && timer.durationMinutes.trim()) {
+              const parsed = Number(timer.durationMinutes);
+              if (!Number.isNaN(parsed)) {
+                return parsed * 60 * 1000;
+              }
+            }
+            return 0;
+          })();
+
+          const durationMs = Number.isFinite(rawDurationMs) ? rawDurationMs : 0;
+          if (!durationMs || durationMs <= 0) {
+            return null;
+          }
+
+          const collected = new Set();
+          ['label', 'value', 'name', 'announcement'].forEach(key => {
+            const value = timer[key];
+            if (typeof value === 'string' && value.trim()) {
+              collected.add(value);
+            }
+          });
+          if (Array.isArray(timer.references)) {
+            timer.references.forEach(ref => {
+              if (typeof ref === 'string' && ref.trim()) {
+                collected.add(ref);
+              }
+            });
+          }
+          if (Array.isArray(timer.keywords)) {
+            timer.keywords.forEach(ref => {
+              if (typeof ref === 'string' && ref.trim()) {
+                collected.add(ref);
+              }
+            });
+          }
+
+          const matchers = Array.from(collected)
+            .map(value => normalizeText(String(value)))
+            .filter(Boolean);
+
+          if (!matchers.length) {
+            return null;
+          }
+
+          const firstCollected = collected.size ? collected.values().next().value : '';
+
+          const label = (typeof timer.label === 'string' && timer.label.trim())
+            ? timer.label.trim()
+            : firstCollected || matchers[0];
+
+          const announcement = (typeof timer.announcement === 'string' && timer.announcement.trim())
+            ? timer.announcement.trim()
+            : label;
+
+          const idSource = typeof timer.id === 'string' && timer.id.trim()
+            ? timer.id.trim()
+            : matchers[0];
+
+          const id = idSource || `timer-${index}`;
+
+          return {
+            id,
+            label: label || announcement || 'Produit',
+            announcement: announcement || label || 'Produit',
+            durationMs,
+            matchers
+          };
+        })
+        .filter(Boolean);
+
+      applyFilter();
+    })
+    .catch(() => {
+      productTimerEntries = [];
+      applyFilter();
+    });
+}
+
 let debounceTimer = null;
 function scheduleFilter() {
   clearTimeout(debounceTimer);
@@ -557,6 +843,7 @@ function init() {
   loadFilters();
   initObserver();
   loadReferenceFile();
+  loadTimerConfig();
 }
 
 chrome.storage.onChanged.addListener((changes, areaName) => {
@@ -576,6 +863,13 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
     if (autoPrintEnabled) {
       maybeAutoPrintTickets();
     }
+  }
+  if (Object.prototype.hasOwnProperty.call(changes, TIMER_ENABLED_KEY)) {
+    productTimersEnabled = Boolean(changes[TIMER_ENABLED_KEY].newValue);
+    if (!productTimersEnabled) {
+      clearAllProductTimers();
+    }
+    applyFilter();
   }
 });
 
