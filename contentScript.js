@@ -1,7 +1,11 @@
 // Content script pour filtrer les tickets sur kitchen-display.innovorder.fr
 
 const STORAGE_KEY = 'allowedProducts';
+const REFERENCES_URL = chrome.runtime.getURL('references.json');
+
 let allowedProducts = [];
+let filterKeywords = [];
+const referenceLookup = new Map();
 
 function normalizeText(str) {
   return (str || '')
@@ -11,11 +15,11 @@ function normalizeText(str) {
 }
 
 function elementMatchesFilter(el) {
-  if (!allowedProducts.length) {
+  if (!filterKeywords.length) {
     return true;
   }
   const text = normalizeText(el.innerText || '');
-  return allowedProducts.some(p => text.includes(p));
+  return filterKeywords.some(p => text.includes(p));
 }
 
 function showElement(el) {
@@ -40,7 +44,7 @@ function applyFilter() {
     );
     const allFormulas = ticket.querySelectorAll('[data-testid="formula"]');
 
-    if (!allowedProducts.length) {
+    if (!filterKeywords.length) {
       showElement(ticket);
       ticket.dataset.productFilterHidden = 'false';
       allTicketItems.forEach(showElement);
@@ -66,7 +70,7 @@ function applyFilter() {
       );
       const headerMatches = elementMatchesFilter(header);
 
-      if (!allowedProducts.length) {
+      if (!filterKeywords.length) {
         showElement(header);
         const customisations = header.querySelector('[data-testid="customisation-container"]');
         if (customisations) {
@@ -94,7 +98,7 @@ function applyFilter() {
 
     // Masquer les blocs de customisation autonomes qui ne correspondent pas.
     ticket.querySelectorAll('[data-testid="customisation-container"]').forEach(container => {
-      if (!allowedProducts.length) {
+      if (!filterKeywords.length) {
         showElement(container);
         return;
       }
@@ -148,15 +152,86 @@ function applyFilter() {
   });
 }
 
+function rebuildFilterKeywords() {
+  const normalized = allowedProducts
+    .filter(Boolean)
+    .map(String)
+    .map(normalizeText)
+    .filter(Boolean);
+
+  const keywords = new Set(normalized);
+
+  normalized.forEach(value => {
+    const related = referenceLookup.get(value);
+    if (related) {
+      related.forEach(item => keywords.add(item));
+    }
+  });
+
+  filterKeywords = Array.from(keywords);
+}
+
 function loadFilters() {
   chrome.storage.sync.get({ [STORAGE_KEY]: [] }, data => {
     const raw = data[STORAGE_KEY] || [];
     allowedProducts = raw
       .filter(Boolean)
       .map(String)
-      .map(normalizeText);
+      .map(str => str.trim())
+      .filter(Boolean);
+    rebuildFilterKeywords();
     applyFilter();
   });
+}
+
+function loadReferenceFile() {
+  fetch(REFERENCES_URL)
+    .then(response => {
+      if (!response.ok) {
+        throw new Error('Unable to load references');
+      }
+      return response.json();
+    })
+    .then(data => {
+      referenceLookup.clear();
+      const targets = Array.isArray(data.targets) ? data.targets : [];
+      targets.forEach(target => {
+        const collected = new Set();
+        if (target.label) {
+          collected.add(target.label);
+        }
+        if (target.value) {
+          collected.add(target.value);
+        }
+        if (Array.isArray(target.references)) {
+          target.references.forEach(ref => {
+            if (ref) {
+              collected.add(ref);
+            }
+          });
+        }
+
+        const normalizedRefs = Array.from(collected)
+          .map(String)
+          .map(normalizeText)
+          .filter(Boolean);
+
+        if (!normalizedRefs.length) {
+          return;
+        }
+
+        normalizedRefs.forEach(alias => {
+          referenceLookup.set(alias, normalizedRefs);
+        });
+      });
+      rebuildFilterKeywords();
+      applyFilter();
+    })
+    .catch(() => {
+      referenceLookup.clear();
+      rebuildFilterKeywords();
+      applyFilter();
+    });
 }
 
 let debounceTimer = null;
@@ -184,6 +259,7 @@ function initObserver() {
 function init() {
   loadFilters();
   initObserver();
+  loadReferenceFile();
 }
 
 chrome.storage.onChanged.addListener((changes, areaName) => {
@@ -193,7 +269,9 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
     allowedProducts = raw
       .filter(Boolean)
       .map(String)
-      .map(normalizeText);
+      .map(str => str.trim())
+      .filter(Boolean);
+    rebuildFilterKeywords();
     applyFilter();
   }
 });
