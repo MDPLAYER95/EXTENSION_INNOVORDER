@@ -551,6 +551,41 @@ function collectCustomisations(container) {
   return items;
 }
 
+function getArticleStatus(article) {
+  if (!(article instanceof HTMLElement)) {
+    return 'unknown';
+  }
+
+  if (article.classList.contains('io-product-ready')) {
+    return 'done';
+  }
+
+  const statusIcon = article.querySelector('svg[data-testid]');
+  const rawStatus =
+    (statusIcon && (statusIcon.dataset.testid || statusIcon.getAttribute('data-testid'))) || '';
+  const normalizedStatus = rawStatus
+    .toString()
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z]/g, '');
+
+  if (!normalizedStatus) {
+    return 'unknown';
+  }
+
+  if (normalizedStatus.includes('doing') || normalizedStatus.includes('progress')) {
+    return 'doing';
+  }
+  if (normalizedStatus.includes('todo')) {
+    return 'todo';
+  }
+  if (normalizedStatus.includes('done')) {
+    return 'done';
+  }
+
+  return normalizedStatus;
+}
+
 function collectArticleDetails(article) {
   const lines = [];
   if (!article) {
@@ -563,7 +598,8 @@ function collectArticleDetails(article) {
       type: 'item',
       text: label,
       element: article,
-      timerTarget: labelEl || article
+      timerTarget: labelEl || article,
+      status: getArticleStatus(article)
     });
   }
   const customisations = collectCustomisations(
@@ -681,18 +717,19 @@ function processTicketTimers(ticket, activeSignatures) {
     return;
   }
 
-  const doingIcon = ticket.querySelector('svg[data-testid="DOING"]');
-  if (!doingIcon) {
+  const orderNumber = getTicketNumber(ticket);
+  const details = extractTicketDetails(ticket).filter(entry => entry.type === 'item');
+  const activeItems = details.filter(entry => entry.status === 'doing');
+
+  if (!activeItems.length) {
     cleanupTimersForTicket(signature, new Set());
     return;
   }
 
-  const orderNumber = getTicketNumber(ticket);
-  const details = extractTicketDetails(ticket).filter(entry => entry.type === 'item');
   const keepKeys = new Set();
   const occurrenceCount = new Map();
 
-  details.forEach(entry => {
+  activeItems.forEach(entry => {
     const normalizedText = normalizeText(entry.text);
     if (!normalizedText) {
       return;
