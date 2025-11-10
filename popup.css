@@ -38,7 +38,7 @@ button {
   margin-top: 2px;
 }
 
-#auto-print-help {
+.toggle-help {
   margin: 0 0 8px 22px;
   font-size: 11px;
   color: #555;

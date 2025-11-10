@@ -1,0 +1,11 @@
+{
+  "timers": [
+    {
+      "label": "🍗WINGS",
+      "durationSeconds": 240,
+      "references": [
+        "wings"
+      ]
+    }
+  ]
+}

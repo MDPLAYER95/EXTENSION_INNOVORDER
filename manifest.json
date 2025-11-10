@@ -23,7 +23,8 @@
   "web_accessible_resources": [
     {
       "resources": [
-        "references.json"
+        "references.json",
+        "productTimers.json"
       ],
       "matches": [
         "https://kitchen-display.innovorder.fr/*"
