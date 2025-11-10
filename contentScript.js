@@ -48,6 +48,41 @@ function getTicketSignature(ticket) {
     return ticket.dataset.printSignature;
   }
 
+  const dataset = ticket.dataset || {};
+  const datasetKeys = ['ticketId', 'orderId', 'id', 'uuid', 'reference'];
+  for (const key of datasetKeys) {
+    const value = (dataset[key] || '').trim();
+    if (value) {
+      const signature = normalizeText(value);
+      if (signature) {
+        ticket.dataset.printSignature = signature;
+        return signature;
+      }
+    }
+  }
+
+  const attributeKeys = ['data-ticket-id', 'data-order-id', 'data-id', 'id'];
+  for (const attr of attributeKeys) {
+    const value = (ticket.getAttribute(attr) || '').trim();
+    if (value) {
+      const signature = normalizeText(value);
+      if (signature) {
+        ticket.dataset.printSignature = signature;
+        return signature;
+      }
+    }
+  }
+
+  const ticketNumberRaw = getTicketNumber(ticket);
+  if (ticketNumberRaw) {
+    const firstLine = ticketNumberRaw.split(/\r?\n/)[0].trim();
+    const ticketNumber = normalizeText(firstLine);
+    if (ticketNumber) {
+      ticket.dataset.printSignature = ticketNumber;
+      return ticketNumber;
+    }
+  }
+
   const header = ticket.querySelector('[data-testid="ticket-header"]');
   const infoText = ticket.querySelector('[data-testid="ticket-info-text"]');
 
