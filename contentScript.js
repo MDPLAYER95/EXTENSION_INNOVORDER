@@ -56,15 +56,64 @@ function applyFilter() {
       }
     });
 
-    // Si un en-tête de formule correspond au filtre, on affiche toute la formule
+    // Gérer les en-têtes de formules pour n'afficher que les informations pertinentes.
     ticket.querySelectorAll('[data-testid="formula-header"]').forEach(header => {
       const formula = header.closest('[data-testid="formula"]');
       if (!formula) return;
-      if (elementMatchesFilter(header)) {
+
+      const formulaItems = Array.from(
+        formula.querySelectorAll('article[data-testid="formula-ticket-item"]')
+      );
+      const headerMatches = elementMatchesFilter(header);
+
+      if (!allowedProducts.length) {
+        showElement(header);
+        const customisations = header.querySelector('[data-testid="customisation-container"]');
+        if (customisations) {
+          showElement(customisations);
+        }
+        return;
+      }
+
+      if (headerMatches) {
+        showElement(header);
+        const customisations = header.querySelector('[data-testid="customisation-container"]');
+        if (customisations) {
+          showElement(customisations);
+        }
         showElement(formula);
-        formula
-          .querySelectorAll('article[data-testid="formula-ticket-item"]')
-          .forEach(showElement);
+        formulaItems.forEach(showElement);
+      } else {
+        hideElement(header);
+        const customisations = header.querySelector('[data-testid="customisation-container"]');
+        if (customisations) {
+          hideElement(customisations);
+        }
+      }
+    });
+
+    // Masquer les blocs de customisation autonomes qui ne correspondent pas.
+    ticket.querySelectorAll('[data-testid="customisation-container"]').forEach(container => {
+      if (!allowedProducts.length) {
+        showElement(container);
+        return;
+      }
+
+      const parentHeader = container.closest('[data-testid="formula-header"]');
+      const headerMatches = parentHeader ? elementMatchesFilter(parentHeader) : false;
+
+      if (headerMatches || elementMatchesFilter(container)) {
+        showElement(container);
+        return;
+      }
+
+      const parentArticle = container.closest('article');
+      const parentFormula = container.closest('[data-testid="formula"]');
+      const parentVisible = (parentArticle && parentArticle.style.display !== 'none') ||
+        (parentFormula && parentFormula.style.display !== 'none');
+
+      if (parentVisible) {
+        hideElement(container);
       }
     });
 
